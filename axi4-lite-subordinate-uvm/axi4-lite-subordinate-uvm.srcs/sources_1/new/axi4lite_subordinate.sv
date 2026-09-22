@@ -24,8 +24,10 @@
 
 
 module axi4lite_subordinate #(
-    parameter int ADDR_W = 8, // byte address width for subordinate
-    parameter int DATA_W = 32 // going for 32 bit length for ease
+    parameter int ADDR_W  = 8,  // byte address width for subordinate
+    parameter int DATA_W  = 32, // going for 32 bit length for ease
+    parameter int NUM_REG = 32,  // num of DATA_W - wide regs
+    localparam int STRB_W = DATA_W / 8
 ) (
     // global
     input logic ACLK,
@@ -35,8 +37,8 @@ module axi4lite_subordinate #(
     input  logic                AWVALID,
     output logic                AWREADY,
     input  logic [ADDR_W-1:0]   AWADDR,
-    output logic [2:0]          AWPROT, //3 independent yes/no attribs
-                                        //Bit 0 - privileged
+    input  logic [2:0]          AWPROT, //3 independent yes/no attribs
+                                        //Bit 0 - unprivileged / privileged
                                         //Bit 1 - secure / non-secure
                                         //Bit 2 - instruction / data
     
@@ -44,7 +46,7 @@ module axi4lite_subordinate #(
     input  logic                WVALID,
     output logic                WREADY,
     input  logic [DATA_W-1:0]   WDATA,
-    input  logic [DATA_W/8-1:0] WSTRB, // one bit per byte lane
+    input  logic [STRB_W-1:0] WSTRB, // one bit per byte lane
                                        // scales with data bus
     
     // Write response channel
@@ -58,9 +60,9 @@ module axi4lite_subordinate #(
     // Read address channel
     input  logic                ARVALID,
     output logic                ARREADY,
-    input  logic [DATA_W-1:0]   ARADDR,
+    input  logic [ADDR_W-1:0]   ARADDR,
     input  logic [2:0]          ARPROT, //3 independent yes/no attribs
-                                        //Bit 0 - privileged
+                                        //Bit 0 - unprivileged / privileged
                                         //Bit 1 - secure / non-secure
                                         //Bit 2 - instruction / data
     
@@ -74,6 +76,16 @@ module axi4lite_subordinate #(
                                        // DECERR(2'b11)
     
 );
+// B/R RESP types
+localparam logic [1:0] RESP_OKAY   = 2'b00;
+localparam logic [1:0] RESP_EXOKAY = 2'b01; // not legal for AXI4-Lite
+localparam logic [1:0] RESP_SLVERR = 2'b10;
+localparam logic [1:0] RESP_DECERR = 2'b11;
+
+// Derived address map params
+localparam int ADDR_LSB = $clog2(STRB_W);  // word offset bits dropped (2 for 32-bit)
+localparam int IDX_W    = $clog2(NUM_REG); // register index width (5 for 32 regs)
+localparam int MAP_SIZE = NUM_REG * STRB_W; // mapped bytes (addr >= MAP_SIZE -> SLVERR
 
 
 endmodule
