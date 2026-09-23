@@ -17,14 +17,14 @@
 //   DATA_W - data bus width (default 32)
 //   NUM_REG   - number of 32-bit registers (default 32)
 //
-// Reference:  ARM IHI 0022H, AMBA AXI and ACE Protocol Specification
+// Reference:  ARM IHI 0022H.c, AMBA AXI and ACE Protocol Specification
 //
 // SPDX-License-Identifier: MIT
 // SLVERR used to indicate unsuccessfull transaction
 // returned for unmapped offsets iwthin this subordinate's address window
 // DECERR is reserved for the interconnect, per the spec:
 // "Generated, typically, by an interconnect component, to incidate that
-// there is no subordinate at the transaction address." (IHI 0022H A3-60)
+// there is no subordinate at the transaction address." (IHI 0022H.c  A3-60)
 //////////////////////////////////////////////////////////////////////////////////
 
 
@@ -92,9 +92,14 @@ localparam int ADDR_LSB = $clog2(STRB_W);  // word offset bits dropped (2 for 32
 localparam int IDX_W    = $clog2(NUM_REG); // register index width (5 for 32 regs)
 localparam int MAP_SIZE = NUM_REG * STRB_W; // mapped bytes (addr >= MAP_SIZE -> SLVERR
 
+// State machine for Write Side
 typedef enum logic [1:0] {W_IDLE, W_WAIT_DATA, W_WAIT_ADDR, W_RESP} w_state_t;
 w_state_t w_state;
+// State machine for Read Side
+typedef enum logic [1:0] {R_IDLE, R_DATA} r_state_t;
+r_state_t r_state;
 
+// Write internal logics
 logic [DATA_W-1:0] regs [NUM_REG];
 logic [ADDR_W-1:0] addr_q, wr_addr;
 logic [DATA_W-1:0] data_q, wr_data;
@@ -102,11 +107,16 @@ logic [STRB_W-1:0] strb_q, wr_strb;
 logic [IDX_W-1:0]  wr_idx;
 logic              aw_hs, w_hs, wr_fire, wr_in_range;
 
+// Read internal logics
+logic              ar_hs, rd_in_range;
+logic [IDX_W-1:0]  rd_idx;
+
+// Write transaction
 always_comb begin
     AWREADY = (w_state == W_IDLE) || (w_state == W_WAIT_ADDR);
     WREADY  = (w_state == W_IDLE) || (w_state == W_WAIT_DATA);
-    aw_hs   = AWVALID && AWREADY; //valid ready signal state machine
-    w_hs    = WVALID  && WREADY;  //
+    aw_hs   = AWVALID && AWREADY; 
+    w_hs    = WVALID  && WREADY; 
     
     // default to stop latches
     wr_fire = 1'b0;
@@ -125,6 +135,7 @@ always_comb begin
     wr_idx      = wr_addr[ADDR_LSB +: IDX_W]; // indexed part select  
 end
 
+// Write transaction
 always_ff @(posedge ACLK) begin
     if (!ARESETn) begin
         w_state <= W_IDLE;
@@ -186,5 +197,44 @@ always_ff @(posedge ACLK) begin
         endcase
     end
 end
+
+
+
+// Read Transaction
+always_comb begin
+    ARREADY     = (r_state == R_IDLE);
+    ar_hs       = ARVALID && ARREADY;
+    rd_in_range = ARADDR < MAP_SIZE;
+    rd_idx      = ARADDR[ADDR_LSB +: IDX_W];
+end
+
+always_ff @(posedge ACLK) begin
+    if (!ARESETn) begin
+        r_state <= R_IDLE;
+        RVALID  <= 1'b0; //spec req RVALID low during reset
+        RDATA   <= '0;
+        RRESP   <= RESP_OKAY;
+    end else begin
+        unique case (r_state)
+            R_IDLE:
+                if (ar_hs) begin // address accepted: capture response
+                    RDATA <= rd_in_range ? regs[rd_idx] : '0;
+                    RRESP <= rd_in_range ? RESP_OKAY : RESP_SLVERR;
+                    RVALID <= 1'b1;
+                    r_state <= R_DATA;
+                end else begin
+                    r_state <= R_IDLE;
+                end
+            R_DATA:
+                if (RVALID && RREADY) begin
+                    RVALID  <= 1'b0;
+                    r_state <= R_IDLE;
+                end else begin
+                    r_state <= R_DATA;
+                end
+         endcase
+    end
+end
+
 
 endmodule
