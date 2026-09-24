@@ -21,7 +21,7 @@
 
 
 module axi_write_tb;
-    // Pararmeters
+    // Parameters
     localparam int ADDR_W   = 12;
     localparam int DATA_W   = 32;
     localparam int NUM_REG  = 32;
@@ -76,28 +76,50 @@ module axi_write_tb;
    logic [DATA_W-1:0] model [NUM_REG];
    int errors     = 0;
    int num_writes = 0;
+   int tc_num     = 0;
    
    function automatic void fail(input string msg);
-       $error("[%0t] %s", $time, msg);
-       errors++;
+        $error("[%0t] TC%0d: %s", $time, tc_num, msg);
+        errors++;
+   endfunction
+   
+   function automatic void testcase(input string name);
+        tc_num++;
+        $display("[%0t] ---- TC%0d: %s", $time, tc_num, name);
    endfunction
    
    function automatic void check_regs(input string tag);
        for (int i = 0; i < NUM_REG; i++) begin
            if (dut.regs[i] !== model[i]) begin
-                $error("[%0t] %s: reg[%0d] = 0x%h, expected 0x%h",
-                            $time, tag, i, dut.regs[i], model[i]);
-                errors++;
+               fail($sformatf("%s: reg[%0d] = 0x%h, expected 0x%h",
+                              tag, i, dut.regs[i], model[i]));
            end
        end
    endfunction
    
+   // Protocol monitor: B must never appear before both AW and W were accepted
+   int aw_pending = 0, w_pending = 0;
+
+   always @(posedge ACLK) begin
+       if (!ARESETn) begin
+           aw_pending = 0;
+           w_pending  = 0;
+       end else begin
+           if (BVALID && (aw_pending == 0 || w_pending == 0)) begin
+               fail("BVALID asserted before both AW and W were accepted");
+           end
+           if (AWVALID && AWREADY) begin aw_pending++; end
+           if (WVALID  && WREADY)  begin w_pending++;  end
+           if (BVALID  && BREADY)  begin aw_pending--; w_pending--; end
+       end
+   end
+   
    task automatic send_aw(input logic [ADDR_W-1:0] addr,
                           input int delay);
-       repeat (delay) @(negedge ACLK);
+       repeat (delay) begin @(negedge ACLK); end
        AWADDR = addr;
        AWVALID = 1'b1;
-       while (!AWREADY) @(negedge ACLK); //READY seen goes into handshake at next posedge
+       while (!AWREADY) begin @(negedge ACLK); end//READY seen goes into handshake at next posedge
        @(posedge ACLK);
        @(negedge ACLK);
        AWVALID = 1'b0;
@@ -107,31 +129,32 @@ module axi_write_tb;
                          input logic [STRB_W-1:0] strb,
                          input int delay);
    
-       repeat (delay) @(negedge ACLK);
+       repeat (delay) begin @(negedge ACLK); end
        WDATA  = data;
        WSTRB  = strb;
        WVALID = 1'b1;
-       while (!WREADY) @(negedge ACLK);
+       while (!WREADY) begin @(negedge ACLK); end
        @(posedge ACLK);
        @(negedge ACLK);
        WVALID = 1'b0;
    endtask
    
+   
    // wait for BVALID, holds BREADY low for "stall" cycles while checking that
    // BVALID/BRESP stays stable, then completes handshake
    task automatic get_b(input int stall, output logic [1:0] resp);
-       while (!BVALID) @(negedge ACLK);
+       while (!BVALID) begin @(negedge ACLK); end
        resp = BRESP;
        repeat (stall) begin
            @(negedge ACLK);
-           if (!BVALID) begin        fail("BVALID dropped before BREADY"); end
+           if (!BVALID) begin fail("BVALID dropped before BREADY"); end
            if (BRESP !== resp) begin fail("BRESP changed while waiting for BREADY"); end
        end
        BREADY = 1'b1;
        @(posedge ACLK);
        @(negedge ACLK);
        BREADY = 1'b0;
-       if (BVALID) fail("BVALID still high after B handshake");
+       if (BVALID) begin fail("BVALID still high after B handshake"); end
    endtask
    
    // Full write transaction && checking
@@ -172,32 +195,62 @@ module axi_write_tb;
        num_writes++;
    endtask
    
+   // reset DUT alongside model and check both come out at zero
+   // currently only calls between transactions, never mid handshake
+   // going to implement that later
+   task automatic do_reset(input int cycles = 5);
+       if (ARESETn) begin @(negedge ACLK); end // to account for initial ARESETn assignment
+       ARESETn = 1'b0;
+       AWVALID = 1'b0; //spec wants manager to drive VALIDs low during reset
+       WVALID  = 1'b0;
+       BREADY  = 1'b0;
+       foreach (model[i]) begin model[i] = '0; end
+       repeat (cycles) begin @(posedge ACLK); end
+       @(negedge ACLK);
+       if (BVALID !== 1'b0) begin fail("BVALID not low during reset"); end
+       ARESETn = 1'b1;
+       check_regs("after reset");
+   endtask
    // Test sequence
    initial begin
-        for (int i = 0; i < NUM_REG; i++) model[i] = '0;
  
         // Reset
-        ARESETn = 1'b0;
-        repeat (5) @(posedge ACLK);
-        @(negedge ACLK);
-        if (BVALID !== 1'b0) fail("BVALID not low during reset");
-        ARESETn = 1'b1;
-        check_regs("after reset");
+        do_reset();
  
+        
         //        addr                             data          strb     aw w  b
-        axi_write(ADDR_W'('h000),                  32'hDEAD_BEEF, 4'hF);            // AW + W same cycle
-        axi_write(ADDR_W'('h004),                  32'h1234_5678, 4'hF,   0, 3);    // AW first
-        axi_write(ADDR_W'('h008),                  32'hCAFE_F00D, 4'hF,   3, 0);    // W first
-        axi_write(ADDR_W'('h000),                  32'h1111_2222, 4'b0101);         // partial: bytes 0, 2 of reg 0
-        axi_write(ADDR_W'('h00C),                  32'hFFFF_FFFF, 4'h0);            // WSTRB = 0: OKAY, nothing written
-        axi_write(ADDR_W'(MAP_SIZE - STRB_W),      32'hA5A5_A5A5, 4'hF);            // last mapped reg (0x07C)
-        axi_write(ADDR_W'(MAP_SIZE),               32'hFFFF_FFFF, 4'hF);            // first unmapped (0x080): SLVERR
-        axi_write(ADDR_W'(2**ADDR_W - STRB_W),     32'hFFFF_FFFF, 4'hF);            // top of space (0xFFC): SLVERR
-        axi_write(ADDR_W'('h010),                  32'h0BAD_CAFE, 4'hF,   0, 0, 5); // B backpressure, 5 cycles
- 
+        testcase("AW and W in the same cycle");
+        axi_write(ADDR_W'('h000),                  32'hDEAD_BEEF, 4'hF);
+        testcase("AW before W");
+        axi_write(ADDR_W'('h004),                  32'h1234_5678, 4'hF,   0, 3);
+        testcase("W before AW");
+        axi_write(ADDR_W'('h008),                  32'hCAFE_F00D, 4'hF,   3, 0);
+        testcase("AW and W both delayed");
+        axi_write(ADDR_W'('h014),                  32'hFACA_DE00, 4'hF,   3, 3);
+        testcase("WSTRB = 0 writes nothing");
+        axi_write(ADDR_W'('h00C),                  32'hFFFF_FFFF, 4'h0);
+        
+        testcase("mid-test reset clears written registers");
+        do_reset();
+
+        testcase("unaligned partial write lands in containing word");
+        axi_write(ADDR_W'('h016),                  32'h1357_9BDF, 4'b1100);         // reg 5 -> 0x13570000
+        testcase("post-reset rewrite, then partial strobe merge");
+        axi_write(ADDR_W'('h000),                  32'h7733_8844, 4'hF);
+        axi_write(ADDR_W'('h000),                  32'h1111_2222, 4'b0101);         // reg 0 -> 0x77118822
+        testcase("last mapped register");
+        axi_write(ADDR_W'(MAP_SIZE - STRB_W),      32'hA5A5_A5A5, 4'hF);
+        testcase("first unmapped address: SLVERR");
+        axi_write(ADDR_W'(MAP_SIZE),               32'hFFFF_FFFF, 4'hF);
+        testcase("top of address space: SLVERR");
+        axi_write(ADDR_W'(2**ADDR_W - STRB_W),     32'hFFFF_FFFF, 4'hF);
+        testcase("B channel backpressure, 5 cycles");
+        axi_write(ADDR_W'('h010),                  32'h0BAD_CAFE, 4'hF,   0, 0, 5);
+
         $display("====================================");
         $display(" writes: %0d   errors: %0d", num_writes, errors);
-        $display(errors == 0 ? " PASS" : " FAIL");
+        $display(" aw_pending: %0d    w_pending: %0d", aw_pending, w_pending);
+        $display("%s", errors == 0 ? " PASS" : " FAIL");
         $display("====================================");
         $finish;
    end
