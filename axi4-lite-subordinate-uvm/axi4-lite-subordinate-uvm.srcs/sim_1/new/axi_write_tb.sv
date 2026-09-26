@@ -119,7 +119,7 @@ module axi_write_tb;
        repeat (delay) begin @(negedge ACLK); end
        AWADDR = addr;
        AWVALID = 1'b1;
-       while (!AWREADY) begin @(negedge ACLK); end//READY seen goes into handshake at next posedge
+       while (!AWREADY) begin @(negedge ACLK); end //READY seen goes into handshake at next posedge
        @(posedge ACLK);
        @(negedge ACLK);
        AWVALID = 1'b0;
