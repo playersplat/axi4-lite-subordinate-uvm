@@ -211,7 +211,9 @@ module axi_write_tb;
        ARESETn = 1'b1;
        check_regs("after reset");
    endtask
-   // Test sequence
+   
+   `include "fault_inject.svh"
+    // ---------------- Test sequence ----------------
    initial begin
  
         // Reset
@@ -246,8 +248,9 @@ module axi_write_tb;
         axi_write(ADDR_W'(2**ADDR_W - STRB_W),     32'hFFFF_FFFF, 4'hF);
         testcase("B channel backpressure, 5 cycles");
         axi_write(ADDR_W'('h010),                  32'h0BAD_CAFE, 4'hF,   0, 0, 5);
-
+        fi_run_all();
         $display("====================================");
+        fi_report();
         $display(" writes: %0d   errors: %0d", num_writes, errors);
         $display(" aw_pending: %0d    w_pending: %0d", aw_pending, w_pending);
         $display("%s", errors == 0 ? " PASS" : " FAIL");
@@ -256,7 +259,7 @@ module axi_write_tb;
    end
      // Watchdog: catch a hung handshake
     initial begin
-        #10us;
+        #50us;
         $fatal(1, "TIMEOUT: a handshake never completed");
     end
  

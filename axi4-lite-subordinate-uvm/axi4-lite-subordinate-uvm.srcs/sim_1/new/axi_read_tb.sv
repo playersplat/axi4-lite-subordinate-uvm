@@ -278,7 +278,7 @@ module axi_read_tb;
         num_reads++;
         
     endtask
-
+    `include "fault_inject.svh"
     // ---------------- Test sequence ----------------
     initial begin
 
@@ -341,8 +341,9 @@ module axi_read_tb;
                       $urandom_range(0, 3), $urandom_range(0, 3), $urandom_range(0, 3));
         for (int i = NUM_REG - 1; i >= 0; i--)
             axi_read(ADDR_W'(i * STRB_W), $urandom_range(0, 3), $urandom_range(0, 4));
-
+        fi_run_all();
         $display("====================================");
+        fi_report();
         $display(" testcases: %0d  writes: %0d  reads: %0d", tc_num, num_writes, num_reads);
         $display(" ar_pending: %0d, aw_pending: %0d, w_pending: %d;", ar_pending, aw_pending, w_pending);
         $display(" errors: %0d", errors);
